@@ -17,6 +17,7 @@
   const WS_URL = "ws://127.0.0.1:8000/ws";
   const HTTP_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
   const REPORT_URL = `${HTTP_BASE}/submission-report`;
+  const SCORE_URL = `${HTTP_BASE}/submission-score`;
   let socket;
   let previewRoot;
   let previewFrame;
@@ -26,6 +27,7 @@
   let submissionAlreadyOpened = false;
   let submissionReportSent = false;
   let submissionsNavigateTimer;
+  let scorePollTimer;
 
   function log(msg) {
     console.log("[qoj-bridge]", msg);
@@ -119,28 +121,19 @@
 
   function extractSubmissionInfo(cw) {
     const jq = cw.$;
-    let row;
-    if (jq) {
-      const rows = jq("tbody>tr");
-      if (rows && rows.length) row = rows[0];
-    } else {
-      row = cw.document.querySelector("tbody>tr");
-    }
+    if (!jq) return null;
+    const rows = jq("tbody>tr");
+    const row = rows && rows.length ? rows[0] : null;
     if (!row || !row.children || row.children.length < 7) return null;
     const sid = row.children[0]?.innerText || "";
-    let surl = "";
-    if (jq) {
-      surl = jq(row.children[0]).find("a").attr("href") || "";
-    } else {
-      const anchor = row.children[0].querySelector && row.children[0].querySelector("a");
-      if (anchor) surl = anchor.getAttribute("href") || "";
-    }
+    const surl = jq(row.children[0]).find("a").attr("href") || "";
     const stime = row.children[row.children.length - 1]?.innerText || "";
     if (!sid || !surl || !stime) return null;
     return { sid, surl, stime };
   }
 
   function reportSubmissionInfo(info) {
+    const jq = window.$;
     if (!lastPayload || !lastPayload.requestId) return;
     submissionReportSent = true;
     const body = new URLSearchParams({
@@ -157,84 +150,106 @@
     }).catch((err) => log("reportSubmissionInfo error: " + err.message));
   }
 
+  function notifyServerScore(sid, status) {
+    const body = new URLSearchParams({ sid, status });
+    fetch(SCORE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    }).catch((err) => log("notifyServerScore error: " + err.message));
+  }
+
+  function startScoreWatch(info) {
+    if (!info || !info.surl || !info.sid) return;
+    const jq = window.$;
+    if (!jq) return;
+    if (scorePollTimer) clearInterval(scorePollTimer);
+    scorePollTimer = setInterval(async () => {
+      try {
+        const res = await fetch(info.surl, { method: "GET", credentials: "same-origin" });
+        const data = await res.text();
+        const score = jq(jq(data).find("table td")[3]);
+        const inner = score && score.children().length ? score.children()[0].innerHTML : "";
+        console.log("score poll:", inner);
+        if (inner && inner.trim() !== "Waiting" && inner.trim() !== "Judging") {
+          clearInterval(scorePollTimer);
+          scorePollTimer = null;
+          notifyServerScore(info.sid, inner.trim());
+        }
+      } catch (err) {
+        console.log(`score poll error: ${String(err)}`);
+      }
+    }, 3000);
+  }
+
   function fillFrameEditor() {
     if (!previewFrame || !lastPayload) return;
     if (previewFrame.contentWindow?.location?.href === "about:blank") return;
     const cw = previewFrame.contentWindow;
-    const doc = cw && cw.document;
-    if (!doc) return;
+    if (!cw || !cw.document) return;
 
     try {
       const jq = cw.$;
+      if (!jq) {
+        log("jquery not found in iframe");
+        return;
+      }
       const useFileUpload = (() => {
-        if (jq) {
-          const div = jq("#div-answer_answer_file");
-          return div && div.length && div.css("display") !== "none";
-        }
-        const div = doc.querySelector("#div-answer_answer_file");
-        if (!div) return false;
-        return cw.getComputedStyle(div).display !== "none";
+        const div = jq("#div-answer_answer_file");
+        return div && div.length && div.css("display") !== "none";
       })();
       setAnswerLanguage(cw);
-      if (jq) {
-        const tab = jq("a[href='#tab-submit-answer']");
-        if (tab && tab.length) {
-            console.log("find element", tab[0]);
-            tab[0].click();
-        }
-        if (useFileUpload) {
-          const fileInput = jq("#input-answer_answer_file")[0];
-          if (fileInput) {
-            const blob = new cw.Blob([lastPayload.code || ""], { type: "text/plain" });
-            const newFile = new cw.File([blob], "qwq.cpp", { type: blob.type });
-            const dataTransfer = new cw.DataTransfer();
-            // keep existing files if any
-            Array.from(fileInput.files || []).forEach((f) => dataTransfer.items.add(f));
-            dataTransfer.items.add(newFile);
-            fileInput.files = dataTransfer.files;
-          }
-        } else {
-          const editor = jq("#input-answer_answer_editor");
-          if (editor && editor.length) {
-            editor.val(lastPayload.code || "");
-            editor.trigger("input");
-          }
-        }
-        const submitBtn = jq("#button-submit-answer");
-        if (submitBtn && submitBtn.length) submitBtn[0].click();
-      } else {
-        const tab = doc.querySelector("a[href='#tab-submit-answer']");
-        if (tab) tab.click();
-        if (useFileUpload) {
-          const fileInput = doc.querySelector("#input-answer_answer_file");
-          if (fileInput) {
-            const blob = new cw.Blob([lastPayload.code || ""], { type: "text/plain" });
-            const newFile = new cw.File([blob], "qwq.cpp", { type: blob.type });
-            const dataTransfer = new cw.DataTransfer();
-            Array.from(fileInput.files || []).forEach((f) => dataTransfer.items.add(f));
-            dataTransfer.items.add(newFile);
-            fileInput.files = dataTransfer.files;
-          }
-        } else {
-          const textarea = doc.querySelector("#input-answer_answer_editor");
-          if (textarea) {
-            textarea.value = lastPayload.code || "";
-            textarea.dispatchEvent(new cw.Event("input", { bubbles: true }));
-          }
-        }
-
-        const submitBtn = doc.querySelector("#button-submit-answer");
-        if (submitBtn) submitBtn.click();
-        else console.log("submit Button not found")
+      const tab = jq("a[href='#tab-submit-answer']");
+      if (tab && tab.length) {
+          console.log("find element", tab[0]);
+          tab[0].click();
       }
+      if (useFileUpload) {
+        const fileInput = jq("#input-answer_answer_file")[0];
+        if (fileInput) {
+          const blob = new cw.Blob([lastPayload.code || ""], { type: "text/plain" });
+          const newFile = new cw.File([blob], "qwq.cpp", { type: blob.type });
+          const dataTransfer = new cw.DataTransfer();
+          // keep existing files if any
+          Array.from(fileInput.files || []).forEach((f) => dataTransfer.items.add(f));
+          dataTransfer.items.add(newFile);
+          fileInput.files = dataTransfer.files;
+        }
+      } else {
+        const editor = jq("#input-answer_answer_editor");
+        if (editor && editor.length) {
+          editor.val(lastPayload.code || "");
+          editor.trigger("input");
+        }
+      }
+      const submitBtn = jq("#button-submit-answer");
+      if (submitBtn && submitBtn.length) submitBtn[0].click();
       // keep iframe open for debugging; no auto navigation
       if (submissionsNavigateTimer) clearTimeout(submissionsNavigateTimer);
+      submissionsNavigateTimer = setTimeout(goToSubmissionsPage, 1000);
     } catch (err) {
       log("fillFrameEditor error: " + err.message);
     }
   }
 
   // keep iframe open for debugging; disable auto-close
+  function closeFrameAndOpenSubmissions() {
+    if (submissionAlreadyOpened) return;
+    submissionAlreadyOpened = true;
+    if (submissionsOpenTimer) {
+      clearTimeout(submissionsOpenTimer);
+      submissionsOpenTimer = null;
+    }
+    if (submissionsNavigateTimer) {
+      clearTimeout(submissionsNavigateTimer);
+      submissionsNavigateTimer = null;
+    }
+    if (previewWrapper && previewWrapper.parentNode) {
+      previewWrapper.parentNode.removeChild(previewWrapper);
+    }
+    previewFrame = null;
+    previewWrapper = null;
+  }
 
   function openProblemFrame(problemCode, codeText, language, requestId) {
     lastPayload = { problemCode, code: codeText, language, requestId };
@@ -294,8 +309,13 @@
       if (!submissionReportSent) {
         const info = extractSubmissionInfo(cw);
         console.log("extracted info:", info);
-        if (info) reportSubmissionInfo(info);
+        if (info) {
+          reportSubmissionInfo(info);
+          startScoreWatch(info);
+        }
       }
+      if (submissionsOpenTimer) clearTimeout(submissionsOpenTimer);
+      submissionsOpenTimer = setTimeout(closeFrameAndOpenSubmissions, 400);
       // stay on submissions page for debugging; do not auto-close iframe
       return;
     }
@@ -328,32 +348,13 @@
 
   function setAnswerLanguage(cw) {
     const langValue = (lastPayload && lastPayload.language) || "C++26";
-    let applied = false;
     const jq = cw.$;
-    if (jq) {
-      const input = jq("#input-answer_answer_language");
-      if (input && input.length && input[0]) {
-        input[0].value = langValue;
-        input.trigger("input");
-        input.trigger("change");
-        applied = true;
-      }
-    }
-    if (!applied) {
-      const input = cw.document.querySelector("#input-answer_answer_language");
-      if (input) {
-        input.value = langValue;
-        input.dispatchEvent(new cw.Event("input", { bubbles: true }));
-        input.dispatchEvent(new cw.Event("change", { bubbles: true }));
-        applied = true;
-      }
-    }
-    if (!applied) {
-      const select = cw.document.querySelector("select[name='language'], select#language");
-      if (select) {
-        select.value = langValue;
-        select.dispatchEvent(new cw.Event("change", { bubbles: true }));
-      }
+    if (!jq) return;
+    const input = jq("#input-answer_answer_language");
+    if (input && input.length && input[0]) {
+      input[0].value = langValue;
+      input.trigger("input");
+      input.trigger("change");
     }
   }
 

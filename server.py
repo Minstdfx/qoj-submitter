@@ -3,6 +3,21 @@ import asyncio
 import datetime
 import uuid
 
+RESULT_NAME_MAP: Dict[str, str] = {
+    "AC ✓": "correct",
+    "TL": "timelimit",
+    "RE": "run-error",
+    "WA": "wrong-answer",
+    "Compile Error": "compiler-error",
+    "ML": "memorylimit",
+    "OL": "outputlimit",
+}
+
+try:
+    from plyer import notification
+except ImportError:  # plyer may be unavailable in some environments
+    notification = None
+
 from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -118,6 +133,25 @@ async def submission_result(request_id: str, timeout: float = 30.0) -> dict:
         return {"status": "done", **result}
     except asyncio.TimeoutError:
         return {"status": "pending"}
+
+
+@app.post("/submission-score")
+async def submission_score(sid: str = Form(...), status: str = Form(...)) -> dict:
+    status = RESULT_NAME_MAP[status] if status in RESULT_NAME_MAP else status
+    msg = f"Submission {sid} received a new result: {status}"
+    print(msg)
+    if notification:
+        try:
+            notification.notify(
+                title=f"Submission {sid}: {status}",
+                message=msg,
+                app_name="QOJ.ac",
+                timeout=5,
+            )
+            print(f"#{sid} received result {status}")
+        except Exception as exc:
+            print(f"plyer notification failed: {exc}")
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
