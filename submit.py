@@ -93,13 +93,13 @@ def resolve_language(lang_arg: Optional[str], path: pathlib.Path) -> str:
     return DEFAULT_LANGUAGE
 
 
-def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filename: str, language: str) -> None:
+def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filename: str, language: str, contest_name: str) -> None:
     if args.yes:
         print(
             "Submission information:\n"
             f"    filename: {filename}\n"
             f"    filesize: {args.filesize}\n"
-            f"    contest: {contest}\n"
+            f"    contest: {contest_name}\n"
             f"    problem: {problem}\n"
             f"    language: {language}"
         )
@@ -108,7 +108,7 @@ def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filen
         "Submission information:\n"
         f"    filename: {filename}\n"
         f"    filesize: {args.filesize}\n"
-        f"    contest: {contest}\n"
+        f"    contest: {contest_name}\n"
         f"    problem: {problem}\n"
         f"    language: {language}\n"
         "Do you want to continue?[y/N]: "
@@ -146,8 +146,15 @@ def main() -> None:
     problem = resolve_problem(args, filename)
     contest_id = args.contest
     language = resolve_language(args.lang, args.file)
-    confirm_or_abort(args, contest_id, problem, filename, language)
     base_url = args.server.rstrip('/')
+    contest_name = ""
+    try:
+        resp = requests.get(f"{base_url}/contest-name", timeout=3)
+        if resp.status_code == 200:
+            contest_name = resp.json().get("contest_name", "") or ""
+    except requests.RequestException:
+        contest_name = ""
+    confirm_or_abort(args, contest_id, problem, filename, language, contest_name)
     url = f"{base_url}/submit"
     data = {
         "problem_code": problem,

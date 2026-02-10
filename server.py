@@ -2,6 +2,8 @@ from typing import Dict, Optional, Set
 import asyncio
 import datetime
 import uuid
+import argparse
+import os
 
 RESULT_NAME_MAP: Dict[str, str] = {
     "AC ✓": "correct",
@@ -22,6 +24,8 @@ from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="QOJ Submit Bridge")
+
+CONTEST_NAME = os.getenv("CONTEST_NAME", "")
 
 app.add_middleware(
     CORSMiddleware,
@@ -135,6 +139,12 @@ async def submission_result(request_id: str, timeout: float = 30.0) -> dict:
         return {"status": "pending"}
 
 
+@app.get("/contest-name")
+async def contest_name() -> dict:
+    print("name:",CONTEST_NAME)
+    return {"contest_name": CONTEST_NAME}
+
+
 @app.post("/submission-score")
 async def submission_score(sid: str = Form(...), status: str = Form(...)) -> dict:
     status = RESULT_NAME_MAP[status] if status in RESULT_NAME_MAP else status
@@ -154,7 +164,25 @@ async def submission_score(sid: str = Form(...), status: str = Form(...)) -> dic
     return {"status": "ok"}
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="QOJ Submit Bridge Server")
+    parser.add_argument("--name", default="", help="Contest name to expose to clients")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    parser.add_argument("--reload", action="store_true", help="Enable uvicorn reload")
+    return parser.parse_args()
+
+
+def set_contest_name(name: str) -> None:
+    global CONTEST_NAME
+    CONTEST_NAME = name
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+    args = parse_args()
+    # propagate to child processes (e.g., uvicorn reload worker)
+    os.environ["CONTEST_NAME"] = args.name
+    set_contest_name(args.name)
+    uvicorn.run("server:app", host=args.host, port=args.port, reload=args.reload)
