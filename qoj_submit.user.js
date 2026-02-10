@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         QOJ WS Submit Bridge
 // @namespace    https://qoj.ac/
-// @version      0.2.1
+// @version      0.2.2
 // @description  Receive code over WebSocket and auto-submit on QOJ
 // @match        https://qoj.ac/contest/*
 // @grant        none
@@ -126,7 +126,7 @@
     } else {
       row = cw.document.querySelector("tbody>tr");
     }
-    if (!row || !row.children || row.children.length < 8) return null;
+    if (!row || !row.children || row.children.length < 7) return null;
     const sid = row.children[0]?.innerText || "";
     let surl = "";
     if (jq) {
@@ -135,7 +135,7 @@
       const anchor = row.children[0].querySelector && row.children[0].querySelector("a");
       if (anchor) surl = anchor.getAttribute("href") || "";
     }
-    const stime = row.children[7]?.innerText || "";
+    const stime = row.children[row.children.length - 1]?.innerText || "";
     if (!sid || !surl || !stime) return null;
     return { sid, surl, stime };
   }
@@ -149,6 +149,7 @@
       surl: info.surl,
       stime: info.stime,
     });
+    console.log("info:", info);
     fetch(REPORT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -226,30 +227,14 @@
         if (submitBtn) submitBtn.click();
         else console.log("submit Button not found")
       }
+      // keep iframe open for debugging; no auto navigation
       if (submissionsNavigateTimer) clearTimeout(submissionsNavigateTimer);
-      submissionsNavigateTimer = setTimeout(goToSubmissionsPage, 1000);
     } catch (err) {
       log("fillFrameEditor error: " + err.message);
     }
   }
 
-  function closeFrameAndOpenSubmissions() {
-    if (submissionAlreadyOpened) return;
-    submissionAlreadyOpened = true;
-    if (submissionsOpenTimer) {
-      clearTimeout(submissionsOpenTimer);
-      submissionsOpenTimer = null;
-    }
-    if (submissionsNavigateTimer) {
-      clearTimeout(submissionsNavigateTimer);
-      submissionsNavigateTimer = null;
-    }
-    if (previewWrapper && previewWrapper.parentNode) {
-      previewWrapper.parentNode.removeChild(previewWrapper);
-    }
-    previewFrame = null;
-    previewWrapper = null;
-  }
+  // keep iframe open for debugging; disable auto-close
 
   function openProblemFrame(problemCode, codeText, language, requestId) {
     lastPayload = { problemCode, code: codeText, language, requestId };
@@ -308,19 +293,17 @@
     if (/\/submissions/.test(path)) {
       if (!submissionReportSent) {
         const info = extractSubmissionInfo(cw);
+        console.log("extracted info:", info);
         if (info) reportSubmissionInfo(info);
       }
-      if (submissionsOpenTimer) clearTimeout(submissionsOpenTimer);
-      submissionsOpenTimer = setTimeout(closeFrameAndOpenSubmissions, 400);
+      // stay on submissions page for debugging; do not auto-close iframe
       return;
     }
     fillFrameEditor();
   }
 
   function goToSubmissionsPage() {
-    const cid = currentContestId();
-    if (!previewFrame || !cid) return;
-    previewFrame.src = `${location.origin}/contest/${cid}/submissions`;
+    // disabled for debugging; keep iframe on problem page
   }
 
   function currentContestId() {
