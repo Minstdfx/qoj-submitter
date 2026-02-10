@@ -2,9 +2,36 @@ import argparse
 import pathlib
 import sys
 import time
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 
 import requests
+
+
+LANGUAGE_NAME_MAP: Dict[str, str] = {
+    "c++": "C++26",
+    "cpp": "C++26",
+    "c": "C11",
+    "java": "Java21",
+    "jvav": "Java21",
+    "python": "PyPy3",
+    "pypy": "PyPy3",
+    "py": "PyPy3",
+    "kotlin": "Kotlin",
+    "rust": "Rust",
+}
+
+EXTENSION_MAP: Dict[str, str] = {
+    ".cpp": "C++26",
+    ".cc": "C++26",
+    ".c": "C11",
+    ".java": "Java21",
+    ".py": "PyPy3",
+    ".kt": "Kotlin",
+    ".kts": "Kotlin",
+    ".rs": "Rust",
+}
+
+DEFAULT_LANGUAGE = "C++26"
 
 
 def parse_args() -> argparse.Namespace:
@@ -16,7 +43,15 @@ def parse_args() -> argparse.Namespace:
         help="Problem code (e.g. A). If omitted, derived from filename stem (must be single letter).",
     )
     parser.add_argument("-c", "--contest", default="", help="Contest id")
-    parser.add_argument("--lang", default="cpp17", help="Language key expected by QOJ")
+    parser.add_argument(
+        "--lang",
+        default=None,
+        help=(
+            "Language to submit. If omitted, infer from file extension. "
+            "Supported: C++/cpp/c++ -> C++26; C/c -> C11; Java/java/jvav -> Java21; "
+            "Python/python/pypy -> PyPy3; Kotlin/kotlin -> Kotlin; Rust/rust -> Rust."
+        ),
+    )
     parser.add_argument(
         "--server", default="http://127.0.0.1:8000", help="Submit bridge base URL"
     )
@@ -46,7 +81,19 @@ def resolve_problem(args: argparse.Namespace, filename: str) -> str:
     sys.exit(1)
 
 
-def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filename: str) -> None:
+def resolve_language(lang_arg: Optional[str], path: pathlib.Path) -> str:
+    if lang_arg:
+        key = lang_arg.strip().lower()
+        if key in LANGUAGE_NAME_MAP:
+            return LANGUAGE_NAME_MAP[key]
+        print(f"unrecognized language '{lang_arg}', defaulting to {DEFAULT_LANGUAGE}", file=sys.stderr)
+    ext = path.suffix.lower()
+    if ext in EXTENSION_MAP:
+        return EXTENSION_MAP[ext]
+    return DEFAULT_LANGUAGE
+
+
+def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filename: str, language: str) -> None:
     if args.yes:
         print(
             "Submission information:\n"
@@ -54,7 +101,7 @@ def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filen
             f"    filesize: {args.filesize}\n"
             f"    contest: {contest}\n"
             f"    problem: {problem}\n"
-            "    language: C++"
+            f"    language: {language}"
         )
         return
     prompt = (
@@ -63,7 +110,7 @@ def confirm_or_abort(args: argparse.Namespace, contest: str, problem: str, filen
         f"    filesize: {args.filesize}\n"
         f"    contest: {contest}\n"
         f"    problem: {problem}\n"
-        "    language: C++\n"
+        f"    language: {language}\n"
         "Do you want to continue?[y/N]: "
     )
     resp = input(prompt).strip().lower()
@@ -98,12 +145,13 @@ def main() -> None:
     args.filesize = len(payload)
     problem = resolve_problem(args, filename)
     contest_id = args.contest
-    confirm_or_abort(args, contest_id, problem, filename)
+    language = resolve_language(args.lang, args.file)
+    confirm_or_abort(args, contest_id, problem, filename, language)
     base_url = args.server.rstrip('/')
     url = f"{base_url}/submit"
     data = {
         "problem_code": problem,
-        "language": args.lang,
+        "language": language,
     }
     files = {"file": (filename, payload, "text/plain")}
     resp = requests.post(url, data=data, files=files, timeout=10)

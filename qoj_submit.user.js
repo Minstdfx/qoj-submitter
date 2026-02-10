@@ -174,6 +174,7 @@
         if (!div) return false;
         return cw.getComputedStyle(div).display !== "none";
       })();
+      setAnswerLanguage(cw);
       if (jq) {
         const tab = jq("a[href='#tab-submit-answer']");
         if (tab && tab.length) {
@@ -250,8 +251,8 @@
     previewWrapper = null;
   }
 
-  function openProblemFrame(problemCode, codeText, requestId) {
-    lastPayload = { problemCode, code: codeText, requestId };
+  function openProblemFrame(problemCode, codeText, language, requestId) {
+    lastPayload = { problemCode, code: codeText, language, requestId };
     submissionAlreadyOpened = false;
     submissionReportSent = false;
     if (submissionsOpenTimer) {
@@ -342,6 +343,37 @@
     }
   }
 
+  function setAnswerLanguage(cw) {
+    const langValue = (lastPayload && lastPayload.language) || "C++26";
+    let applied = false;
+    const jq = cw.$;
+    if (jq) {
+      const input = jq("#input-answer_answer_language");
+      if (input && input.length && input[0]) {
+        input[0].value = langValue;
+        input.trigger("input");
+        input.trigger("change");
+        applied = true;
+      }
+    }
+    if (!applied) {
+      const input = cw.document.querySelector("#input-answer_answer_language");
+      if (input) {
+        input.value = langValue;
+        input.dispatchEvent(new cw.Event("input", { bubbles: true }));
+        input.dispatchEvent(new cw.Event("change", { bubbles: true }));
+        applied = true;
+      }
+    }
+    if (!applied) {
+      const select = cw.document.querySelector("select[name='language'], select#language");
+      if (select) {
+        select.value = langValue;
+        select.dispatchEvent(new cw.Event("change", { bubbles: true }));
+      }
+    }
+  }
+
   function setCode(value) {
     if (window.monaco && monaco.editor && monaco.editor.getModels().length) {
       const model = monaco.editor.getModels()[0];
@@ -375,7 +407,7 @@
     const pageProblem = currentProblemCode();
     if (pageProblem && pageProblem !== problemCode) return;
     // showPreview({ contestId, problemCode, language, code, timestamp: data.timestamp });
-    openProblemFrame(problemCode, code, requestId);
+    openProblemFrame(problemCode, code, language, requestId);
     log(`previewing code for problem ${problemCode}`);
   }
 

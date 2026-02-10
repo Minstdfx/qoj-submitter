@@ -76,7 +76,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 @app.post("/submit")
 async def submit_code(
     problem_code: str = Form(...),
-    language: str = Form("cpp17"),
+    language: str = Form("C++26"),
     file: UploadFile = File(...),
 ) -> dict:
     request_id = create_request_id()
