@@ -1,22 +1,31 @@
 // ==UserScript==
 // @name         QOJ WS Submit Bridge
 // @namespace    https://qoj.ac/
-// @version      0.1.0
+// @version      0.2.1
 // @description  Receive code over WebSocket and auto-submit on QOJ
 // @match        https://qoj.ac/contest/*
 // @grant        none
+// @author       minstdfx
 // @run-at       document-end
 // ==/UserScript==
 
 (function () {
   "use strict";
 
+  if (!location.pathname.match(/^\/contest\/\d*$/)) return;
+
   const WS_URL = "ws://127.0.0.1:8000/ws";
+  const HTTP_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
+  const REPORT_URL = `${HTTP_BASE}/submission-report`;
   let socket;
   let previewRoot;
   let previewFrame;
   let lastPayload;
   let previewWrapper;
+  let submissionsOpenTimer;
+  let submissionAlreadyOpened = false;
+  let submissionReportSent = false;
+  let submissionsNavigateTimer;
 
   function log(msg) {
     console.log("[qoj-bridge]", msg);
@@ -108,61 +117,151 @@
     root.style.display = "flex";
   }
 
+  function extractSubmissionInfo(cw) {
+    const jq = cw.$;
+    let row;
+    if (jq) {
+      const rows = jq("tbody>tr");
+      if (rows && rows.length) row = rows[0];
+    } else {
+      row = cw.document.querySelector("tbody>tr");
+    }
+    if (!row || !row.children || row.children.length < 8) return null;
+    const sid = row.children[0]?.innerText || "";
+    let surl = "";
+    if (jq) {
+      surl = jq(row.children[0]).find("a").attr("href") || "";
+    } else {
+      const anchor = row.children[0].querySelector && row.children[0].querySelector("a");
+      if (anchor) surl = anchor.getAttribute("href") || "";
+    }
+    const stime = row.children[7]?.innerText || "";
+    if (!sid || !surl || !stime) return null;
+    return { sid, surl, stime };
+  }
+
+  function reportSubmissionInfo(info) {
+    if (!lastPayload || !lastPayload.requestId) return;
+    submissionReportSent = true;
+    const body = new URLSearchParams({
+      request_id: lastPayload.requestId,
+      sid: info.sid,
+      surl: info.surl,
+      stime: info.stime,
+    });
+    fetch(REPORT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    }).catch((err) => log("reportSubmissionInfo error: " + err.message));
+  }
+
   function fillFrameEditor() {
     if (!previewFrame || !lastPayload) return;
+    if (previewFrame.contentWindow?.location?.href === "about:blank") return;
     const cw = previewFrame.contentWindow;
     const doc = cw && cw.document;
     if (!doc) return;
 
     try {
       const jq = cw.$;
+      const useFileUpload = (() => {
+        if (jq) {
+          const div = jq("#div-answer_answer_file");
+          return div && div.length && div.css("display") !== "none";
+        }
+        const div = doc.querySelector("#div-answer_answer_file");
+        if (!div) return false;
+        return cw.getComputedStyle(div).display !== "none";
+      })();
       if (jq) {
         const tab = jq("a[href='#tab-submit-answer']");
         if (tab && tab.length) {
             console.log("find element", tab[0]);
             tab[0].click();
         }
-        const editor = jq("#input-answer_answer_editor");
-        if (editor && editor.length) {
-          editor.val(lastPayload.code || "");
-          editor.trigger("input");
+        if (useFileUpload) {
+          const fileInput = jq("#input-answer_answer_file")[0];
+          if (fileInput) {
+            const blob = new cw.Blob([lastPayload.code || ""], { type: "text/plain" });
+            const newFile = new cw.File([blob], "qwq.cpp", { type: blob.type });
+            const dataTransfer = new cw.DataTransfer();
+            // keep existing files if any
+            Array.from(fileInput.files || []).forEach((f) => dataTransfer.items.add(f));
+            dataTransfer.items.add(newFile);
+            fileInput.files = dataTransfer.files;
+          }
+        } else {
+          const editor = jq("#input-answer_answer_editor");
+          if (editor && editor.length) {
+            editor.val(lastPayload.code || "");
+            editor.trigger("input");
+          }
         }
         const submitBtn = jq("#button-submit-answer");
         if (submitBtn && submitBtn.length) submitBtn[0].click();
       } else {
         const tab = doc.querySelector("a[href='#tab-submit-answer']");
         if (tab) tab.click();
-        const textarea = doc.querySelector("#input-answer_answer_editor");
-        if (textarea) {
-          textarea.value = lastPayload.code || "";
-          textarea.dispatchEvent(new cw.Event("input", { bubbles: true }));
+        if (useFileUpload) {
+          const fileInput = doc.querySelector("#input-answer_answer_file");
+          if (fileInput) {
+            const blob = new cw.Blob([lastPayload.code || ""], { type: "text/plain" });
+            const newFile = new cw.File([blob], "qwq.cpp", { type: blob.type });
+            const dataTransfer = new cw.DataTransfer();
+            Array.from(fileInput.files || []).forEach((f) => dataTransfer.items.add(f));
+            dataTransfer.items.add(newFile);
+            fileInput.files = dataTransfer.files;
+          }
+        } else {
+          const textarea = doc.querySelector("#input-answer_answer_editor");
+          if (textarea) {
+            textarea.value = lastPayload.code || "";
+            textarea.dispatchEvent(new cw.Event("input", { bubbles: true }));
+          }
         }
-        
+
         const submitBtn = doc.querySelector("#button-submit-answer");
         if (submitBtn) submitBtn.click();
         else console.log("submit Button not found")
       }
-      setTimeout(closeFrameAndOpenSubmissions, 1600);
+      if (submissionsNavigateTimer) clearTimeout(submissionsNavigateTimer);
+      submissionsNavigateTimer = setTimeout(goToSubmissionsPage, 1000);
     } catch (err) {
       log("fillFrameEditor error: " + err.message);
     }
   }
 
   function closeFrameAndOpenSubmissions() {
+    if (submissionAlreadyOpened) return;
+    submissionAlreadyOpened = true;
+    if (submissionsOpenTimer) {
+      clearTimeout(submissionsOpenTimer);
+      submissionsOpenTimer = null;
+    }
+    if (submissionsNavigateTimer) {
+      clearTimeout(submissionsNavigateTimer);
+      submissionsNavigateTimer = null;
+    }
     if (previewWrapper && previewWrapper.parentNode) {
       previewWrapper.parentNode.removeChild(previewWrapper);
     }
     previewFrame = null;
     previewWrapper = null;
-    const cid = currentContestId();
-    if (cid) {
-      const submissionsUrl = `${location.origin}/contest/${cid}/submissions`;
-      window.open(submissionsUrl, "_blank");
-    }
   }
 
-  function openProblemFrame(problemCode, codeText) {
-    lastPayload = { problemCode, code: codeText };
+  function openProblemFrame(problemCode, codeText, requestId) {
+    lastPayload = { problemCode, code: codeText, requestId };
+    submissionAlreadyOpened = false;
+    submissionReportSent = false;
+    if (submissionsOpenTimer) {
+      clearTimeout(submissionsOpenTimer);
+      submissionsOpenTimer = null;
+    }
+    if (submissionsNavigateTimer) {
+      clearTimeout(submissionsNavigateTimer);
+      submissionsNavigateTimer = null;
+    }
     const targetProblem = problemCode || "A";
     const cid = currentContestId();
     const table = document.querySelector(".table-responsive");
@@ -187,7 +286,7 @@
       frame.style.height = "100%";
       frame.style.border = "0";
 
-      frame.addEventListener("load", fillFrameEditor);
+      frame.addEventListener("load", handleFrameLoad);
 
       wrapper.appendChild(frame);
       document.body.appendChild(wrapper);
@@ -196,8 +295,31 @@
     }
     previewFrame.src = src;
     if (previewFrame.contentDocument && previewFrame.contentDocument.readyState === "complete") {
-      fillFrameEditor();
+      handleFrameLoad();
     }
+  }
+
+  function handleFrameLoad() {
+    if (!previewFrame) return;
+    const cw = previewFrame.contentWindow;
+    if (!cw || !cw.document) return;
+    const path = cw.location?.pathname || "";
+    if (/\/submissions/.test(path)) {
+      if (!submissionReportSent) {
+        const info = extractSubmissionInfo(cw);
+        if (info) reportSubmissionInfo(info);
+      }
+      if (submissionsOpenTimer) clearTimeout(submissionsOpenTimer);
+      submissionsOpenTimer = setTimeout(closeFrameAndOpenSubmissions, 400);
+      return;
+    }
+    fillFrameEditor();
+  }
+
+  function goToSubmissionsPage() {
+    const cid = currentContestId();
+    if (!previewFrame || !cid) return;
+    previewFrame.src = `${location.origin}/contest/${cid}/submissions`;
   }
 
   function currentContestId() {
@@ -248,12 +370,12 @@
 
   function handleMessage(event) {
     const data = JSON.parse(event.data || "{}{}");
-    const { problemCode, language, code } = data;
+    const { problemCode, language, code, requestId } = data;
     if (!problemCode || !code) return;
     const pageProblem = currentProblemCode();
     if (pageProblem && pageProblem !== problemCode) return;
     // showPreview({ contestId, problemCode, language, code, timestamp: data.timestamp });
-    openProblemFrame(problemCode, code);
+    openProblemFrame(problemCode, code, requestId);
     log(`previewing code for problem ${problemCode}`);
   }
 

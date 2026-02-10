@@ -1,6 +1,7 @@
 # qoj-submitter
 Use submit command to submit problem during qoj contests.
-
+## ~~Training Mode not Supported Yet~~
+现在应该支持火车模式了
 ## Usage
 1. 安装油猴脚本
 2. 启动本地服务器 `python server.py`
